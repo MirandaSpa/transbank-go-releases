@@ -1,7 +1,7 @@
 {
-  "version": "v0.2.0",
+  "version": "v0.2.1",
   "channel": "estable",
-  "url": "https://github.com/MirandaSpa/transbank-go-releases/releases/download/v0.2.0/transbank_go-v0.2.0.exe",
-  "sha256": "c2f1483067c93714c2ee7bdb0d703ee8dff6566cc3c5441b48d08c992aab209f",
-  "signature": "/fq73bW/XI+4p8wrlLleKbWNfM6LHl81Yrpx1P/Lt3vRK4LJKhifWfb26BbKiNiZB9cXAqifJYpeXNJqei72AA=="
+  "url": "https://github.com/MirandaSpa/transbank-go-releases/releases/download/v0.2.1/transbank_go-v0.2.1.exe",
+  "sha256": "be31cc36084da32b3236cdfd7c8bdf8b7cf064a0a004353fc7f92a4a1e7c15cb",
+  "signature": "/nPHy/A1uXhG4rCVgUNB4gb1E2SNwR9tDMspB3CF7Wv96jFWUrc5tsLaRpHXcKuzxLo/Ykkmr6pDLyInin9qDw=="
 }
