@@ -212,6 +212,116 @@ $config = Read-Config
 $config | Add-Member -NotePropertyName canal -NotePropertyValue $Canal -Force
 Save-Config $config
 
+# 6b. Herramientas en la carpeta del agente, para dejarles un acceso directo:
+# abrir la carpeta del log y desinstalar. Van aca y no en scripts\ porque el
+# pipeline publica scripts\*.cmd como lanzadores del instalador. Se escriben
+# en ASCII con CRLF: cmd.exe y PowerShell 5.1 leen sin BOM como ANSI/OEM.
+function Save-Herramienta([string]$Nombre, [string]$Texto) {
+    $Texto = $Texto -replace "`r?`n", "`r`n"
+    [IO.File]::WriteAllText((Join-Path $Carpeta $Nombre), $Texto, (New-Object Text.ASCIIEncoding))
+}
+
+Save-Herramienta 'Abrir carpeta del log.cmd' @'
+@echo off
+rem Abre la carpeta del log del agente Transbank con transbank.log seleccionado, para
+rem adjuntarlo al correo o chat con Informatica. Lo crea install.ps1.
+set "DIR=%APPDATA%\repuestos_miranda\transbank"
+if exist "%DIR%\transbank.log" goto log
+if exist "%DIR%" goto dir
+echo Aun no hay log: el agente Transbank no se ha abierto con este usuario de Windows.
+pause
+exit /b
+:log
+start "" explorer.exe /select,"%DIR%\transbank.log"
+exit /b
+:dir
+start "" explorer.exe "%DIR%"
+'@
+
+# La ultima linea va entera en una: cmd.exe lee el .cmd a medida que avanza y
+# la carpeta se borra mientras corre ("cd" sale de ella para poder borrarla).
+Save-Herramienta 'Desinstalar agente.cmd' @'
+@echo off
+rem Desinstala el agente Transbank de este equipo (corre desinstalar.ps1). Lo crea install.ps1.
+title Desinstalar el agente Transbank
+cd /d "%TEMP%" & powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0desinstalar.ps1" & pause & exit
+'@
+
+$desinstalar = @'
+# Desinstala el agente Transbank: lo cierra y quita sus accesos directos, la carpeta
+# del programa y su exclusion de Windows Defender. La configuracion y el log
+# (%APPDATA%\repuestos_miranda\transbank) se borran solo si se pide. Lo crea
+# install.ps1; se corre con "Desinstalar agente.cmd".
+$ErrorActionPreference = 'Stop'
+$Carpeta = '@CARPETA@'
+$Exe = Join-Path $Carpeta 'transbank.exe'
+$ConfigDir = Join-Path $env:APPDATA 'repuestos_miranda\transbank'
+
+function Write-Paso([string]$Texto) { Write-Host "-> $Texto" -ForegroundColor Cyan }
+
+Write-Host "Esto quita el agente Transbank de este equipo ($Carpeta)." -ForegroundColor Yellow
+if ((Read-Host 'Escribe S y aprieta Enter para desinstalar') -notmatch '^\s*[sS]') {
+    Write-Host 'No se desinstalo nada.'
+    return
+}
+$borrarConfig = (Read-Host 'Borrar tambien la configuracion y el log de este usuario? (S/N; si no sabes, N)') -match '^\s*[sS]'
+
+$abiertos = @(Get-Process transbank -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe })
+if ($abiertos.Count -gt 0) {
+    Write-Paso 'Cerrando el agente'
+    $abiertos | Stop-Process -Force
+    $abiertos | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+}
+
+foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Startup'))) {
+    Remove-Item -LiteralPath (Join-Path $dir 'Agente Transbank.lnk') -Force -ErrorAction SilentlyContinue
+}
+Write-Paso 'Accesos directos del escritorio y de Inicio quitados'
+
+# La exclusion del antivirus pide administrador; la carpeta (y su carpeta
+# padre, si queda vacia) se borra en el mismo paso.
+Write-Paso "Borrando $Carpeta y su exclusion de Windows Defender (pide permiso de administrador)"
+$c = [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Carpeta)
+$comando = "`$r = 0; " +
+    "try { Remove-MpPreference -ExclusionPath '$c' -ErrorAction Stop } catch { `$r = 1 }; " +
+    "try { if (Test-Path -LiteralPath '$c') { Remove-Item -LiteralPath '$c' -Recurse -Force -ErrorAction Stop } } catch { exit 2 }; " +
+    "`$padre = Split-Path -Parent '$c'; " +
+    "if (`$padre -and (Test-Path -LiteralPath `$padre) -and -not (Get-ChildItem -LiteralPath `$padre -Force)) { Remove-Item -LiteralPath `$padre -Force -ErrorAction SilentlyContinue }; " +
+    "exit `$r"
+$codificado = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($comando))
+$elevado = $true
+try {
+    $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+        -ArgumentList '-NoProfile', '-EncodedCommand', $codificado
+    $codigo = $p.ExitCode
+} catch {
+    # Sin permiso de administrador: la carpeta la puede borrar el usuario
+    # (install.ps1 le da permiso de modificar), la exclusion no.
+    $elevado = $false
+    try { Remove-Item -LiteralPath $Carpeta -Recurse -Force -ErrorAction Stop; $codigo = 1 } catch { $codigo = 2 }
+}
+if ($codigo -eq 2) {
+    Write-Warning "No se pudo borrar $Carpeta. Cierra el agente y vuelve a desinstalar, o borra la carpeta a mano."
+} elseif ($codigo -eq 1 -and -not $elevado) {
+    Write-Warning "No se dio el permiso de administrador: queda la exclusion de Windows Defender de $Carpeta. Pidele a Informatica que la quite."
+} elseif ($codigo -eq 1) {
+    Write-Warning "No se pudo quitar la exclusion de Windows Defender de $Carpeta (si el equipo usa otro antivirus, quitala en el)."
+}
+
+if ($borrarConfig) {
+    Remove-Item -LiteralPath $ConfigDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Paso "Configuracion y log borrados ($ConfigDir)"
+} elseif (Test-Path -LiteralPath $ConfigDir) {
+    Write-Paso "Quedan la configuracion y el log en $ConfigDir"
+}
+
+if ($codigo -ne 2) {
+    Write-Host 'Listo: el agente Transbank se desinstalo.' -ForegroundColor Green
+}
+'@
+Save-Herramienta 'desinstalar.ps1' $desinstalar.Replace('@CARPETA@', [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Carpeta))
+Write-Paso "En $Carpeta quedaron 'Abrir carpeta del log.cmd' y 'Desinstalar agente.cmd'"
+
 # 7. Accesos directos: escritorio, e Inicio para que abra al encender.
 if (-not $SinAccesos) {
     $shell = New-Object -ComObject WScript.Shell
